@@ -1,0 +1,108 @@
+---
+title: "SI_16s_qscores"
+author: "Georgia"
+date: "2026-02-11"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+summary(cars)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+###READ THIS BEFORE RUNNING
+
+# This code works only if your chromatograms are stored in the same file, chromatogram file names end in "copy", and are saved as .fastq files. 
+
+# To set this up properly, I would recommend duplicating your .ab1 files, opening all the "...copy.ab1" in CodonCode Aligner software, and then exporting all of them together as one .FASTQ file. Then copy and paste that file name into "YOUR_FILE_NAME"
+
+
+#calculating average Q scores for 16s chromatograms pre-trim
+```{r}
+lines <- readLines("YOUR_FILE_NAME.fastq")
+
+# Find where read names occur (they end with "copy")
+name_lines <- grep("copy$", lines)
+
+results <- data.frame(Read = character(),
+                      Mean_Phred = numeric(),
+                      stringsAsFactors = FALSE)
+
+for (i in seq_along(name_lines)) {
+  
+  start <- if (i == 1) 1 else name_lines[i-1] + 1
+  end <- name_lines[i] - 1
+  
+  # Collapse quality block into one string
+  qual_block <- paste(lines[start:end], collapse = "")
+  
+  # Convert ASCII to Phred+33
+  scores <- utf8ToInt(qual_block) - 33
+  
+  mean_score <- mean(scores)
+  
+  read_name <- lines[name_lines[i]]
+  
+  results <- rbind(results,
+                   data.frame(Read = read_name,
+                              Mean_Phred = mean_score))
+}
+
+results
+```
+
+
+#avg q-score post-trim
+```{r}
+trim_lines <- readLines("TRIMMED_FILE_NAME.fastq")
+
+# Find where read names occur (they end with "copy")
+name_trim_lines <- grep("copy$", lines)
+
+trim_results <- data.frame(Read = character(),
+                      Mean_Phred = numeric(),
+                      stringsAsFactors = FALSE)
+
+for (i in seq_along(name_trim_lines)) {
+  
+  start <- if (i == 1) 1 else name_trim_lines[i-1] + 1
+  end <- name_trim_lines[i] - 1
+  
+  # Collapse quality block into one string
+  qual_block_trim <- paste(trim_lines[start:end], collapse = "")
+  
+  # Convert ASCII to Phred+33
+  scores_trim <- utf8ToInt(qual_block_trim) - 33
+  
+  mean_score_trim <- mean(scores_trim)
+  
+  read_name_trim <- trim_lines[name_trim_lines[i]]
+  
+  results_trim <- rbind(results_trim,
+                   data.frame(Read = read_name_trim,
+                              Mean_Phred = mean_score_trim))
+}
+
+results_trim
+
+
+```
