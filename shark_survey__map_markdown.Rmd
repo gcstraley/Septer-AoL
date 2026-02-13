@@ -1,0 +1,549 @@
+---
+title: "AoL_map"
+author: "Georgia"
+date: "2026-02-02"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+summary(cars)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+
+#importing data
+```{r}
+install.packages("here") # package to make project location-independent 
+library(here)
+
+
+AoL_r <- read.csv(here("data", "AoL_map_02102026.csv"), header = TRUE)
+
+
+
+
+
+```
+
+#installing packages
+```{r}
+install.packages("ggmap")
+install.packages("ggplot2")
+install.packages("maps")
+install.packages("sf")
+install.packages("ggspatial")
+install.packages("prettymapr")
+install.packages("rnaturalearth")
+install.packages("rnaturalearthdata")
+install.packages("grid")
+install.packages("maptiles")
+install.packages("tigris")
+
+```
+
+#load packages
+```{r}
+library(ggplot2)
+library(ggmap)
+library(dplyr)
+library(stringr)
+library(maps)
+library(sf)
+library(ggspatial)
+library(prettymapr)
+library(leaflet)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(grid)
+library(maptiles)
+library(terra)
+
+
+
+```
+
+
+#clean dataframe 
+```{r}
+#ensuring apostrophes for lat long coordinates are uniform
+AoL_r$coord_clean <- AoL_r$gps_n_w |>
+  gsub("[’‘′]", "'", x = _) |>
+  gsub("[“”″]", '"', x = _)
+
+#making function handle decimcal minutes
+dms_to_dd <- function(dms) {
+
+  dms <- str_trim(dms)
+  dms <- gsub("[’‘′]", "'", dms)
+  dms <- gsub("[“”″]", '"', dms)
+
+  m <- str_match(
+    dms,
+    "(\\d+)°\\s*(\\d+(?:\\.\\d+)?)'?(?:\\s*(\\d+(?:\\.\\d+)?)\")?"
+  )
+
+  deg <- as.numeric(m[,2])
+  min <- as.numeric(m[,3])
+  sec <- as.numeric(m[,4])
+
+  sec[is.na(sec)] <- 0
+
+  dd <- deg + min / 60 + sec / 3600
+  dd
+}
+
+#remove N/A from dataframe -- no host data for frozen atlantic sharpnose sampled on 3/31/2025 
+AoL_r <- AoL_r[-32, ]
+
+
+#apply dd format to AoL_r
+AoL_r <- AoL_r %>%
+  mutate(
+    lat_dd = dms_to_dd(lat_dms),
+    lon_dd = -dms_to_dd(long_dms)
+  )
+
+#coordinates in correct format for grouping
+AoL_r <- AoL_r %>%
+  mutate(
+    lat_dd = as.numeric(lat_dd),
+    lon_dd = as.numeric(lon_dd)
+  )
+
+#categorizing dates correctly 
+AoL_r <- AoL_r %>%
+  mutate(date = as.Date(date, format = "%m/%d/%y"))
+
+
+```
+
+#organizing data
+```{r}
+#quality control on coordinates
+AoL_r %>%
+  filter(is.na(lat_dd) | is.na(lon_dd)) %>%
+  select(lat_dms, long_dms)
+
+# aggregating catch data by GPS location
+catch_locations <- AoL_r %>%
+  group_by(lat_dd, lon_dd) %>%
+  summarise(
+    n_catches = n(),
+    .groups = "drop"
+  )
+
+
+#color coding inshore and offshore
+location_color <- colorFactor(
+  palette = c("darkorange", "darkorange"),
+  levels = c("inshore", "offshore")
+)
+
+
+
+```
+
+#sample map
+```{r}
+#sample map
+sample_map <- map_data("world")
+
+ggplot() +
+  geom_polygon(
+    data = sample_map,
+    aes(x = long, y = lat, group = group),
+    fill = "grey90",
+    color = "grey60"
+  ) +
+  geom_point(
+    data = catch_locations,
+    aes(x = lon_dd, y = lat_dd, size = n_catches),
+    alpha = 0.6,
+    color = "steelblue"
+  ) +
+  scale_size_continuous(
+    name = "Number of catches",
+    range = c(2, 10)
+  ) +
+  coord_quickmap(
+    xlim = range(catch_locations$lon_dd) + c(-0.1, 0.1),
+    ylim = range(catch_locations$lat_dd) + c(-0.1, 0.1)
+  ) +
+  theme_minimal() +
+  labs(
+    x = "Longitude",
+    y = "Latitude",
+    title = "Catch Locations"
+  )
+
+```
+
+#basic leaflet map (without species/date popups)
+```{r}
+
+basic_map <- leaflet(catch_locations) %>%
+  addTiles() %>%  # fallback base
+  addTiles(
+    urlTemplate = "https://tileservice.charts.noaa.gov/tiles/50000_1/{z}/{x}/{y}.png",
+    attribution = "NOAA"
+  ) %>%
+  addCircleMarkers(
+    lng = ~lon_dd,
+    lat = ~lat_dd,
+    radius = ~sqrt(n_catches) * 3,
+    stroke = FALSE,
+    fillOpacity = 0.7,
+    color = "deepskyblue"
+  ) %>%
+  fitBounds(
+    lng1 = -77.5, lat1 = 33.8,
+    lng2 = -75.3, lat2 = 36.7
+  )
+
+basic_map
+
+```
+
+# interactive map to html
+```{r}
+
+#prepping data 
+popup_map_data <- AoL_r %>%
+  group_by(lat_dd, lon_dd) %>%
+  summarise(
+    n_catches = n(),
+    
+    # species counts
+    species_counts = paste(
+      paste0(
+        unique(species),
+        " (",
+        sapply(unique(species), function(s) sum(species == s)),
+        ")"
+      ),
+      collapse = "<br/>"
+    ),
+    
+    # list all individual dates
+    date_list = paste(
+      sort(unique(date)),
+      collapse = "<br/>"
+    ),
+    
+    location_type = paste(unique(location), collapse = ", "),
+    
+    popup = paste0(
+      "<b>Number of catches:</b> ", n_catches, "<br/><br/>",
+      "<b>Species counts:</b><br/>", species_counts, "<br/><br/>",
+      "<b>Dates:</b><br/>", date_list, "<br/><br/>",
+      "<b>Location:</b> ", location_type
+    ),
+    
+    .groups = "drop"
+  )
+#making north arrow
+north_arrow_html <- "
+<div style='
+  background: white;
+  padding: 6px;
+  border: 1px solid #666;
+  text-align: center;
+  font-size: 14px;
+  line-height: 1;
+'>
+  <div style='font-weight: bold;'>N</div>
+  <div style='font-size: 20px;'>▲</div>
+</div>
+"
+
+#removing data points without lat or long
+popup_map_data <- popup_map_data %>%
+  filter(!is.na(lon_dd) & !is.na(lat_dd))
+
+
+#plotting map
+
+AoL_interactive_map <- leaflet(popup_map_data) %>%
+  addTiles() %>%
+  addTiles(
+    urlTemplate = "https://tileservice.charts.noaa.gov/tiles/50000_1/{z}/{x}/{y}.png",
+    attribution = "NOAA"
+  ) %>%
+  addControl(
+    html = north_arrow_html,
+    position = "topleft"
+  ) %>%
+  addScaleBar(
+    position = "bottomleft",
+    options = scaleBarOptions(
+      metric = TRUE,
+      imperial = FALSE,
+      maxWidth = 100
+    )
+  ) %>%
+  addCircleMarkers(
+    lng = ~lon_dd,
+    lat = ~lat_dd,
+    radius = ~sqrt(n_catches) * 3,
+    fillColor = "steelblue",
+    fillOpacity = 0.75,
+    stroke = TRUE,
+    color = "black",
+    weight = 0.5,
+    popup = ~popup
+  ) %>%
+  fitBounds(
+    lng1 = -77.5, lat1 = 33.8,
+    lng2 = -75.3, lat2 = 36.7
+  )
+AoL_interactive_map
+
+```
+
+
+#static basic polygon map -- DON'T USE THIS 
+```{r eval=FALSE, include=FALSE}
+#convert popup_map_data to sf
+popup_sf <- st_as_sf(
+  popup_map_data,
+  coords = c("lon_dd", "lat_dd"),  # your longitude/latitude columns
+  crs = 4326
+)
+
+#bb box from points
+bb <- st_bbox(popup_sf)
+
+bb_expanded <- bb
+bb_expanded[c("xmin", "ymin")] <- bb[c("xmin", "ymin")] - 0.05
+bb_expanded[c("xmax", "ymax")] <- bb[c("xmax", "ymax")] + 0.05
+
+#creating sf w land polygons
+coast_ll <- ne_states(country = "United States of America", returnclass = "sf") %>%
+  dplyr::filter(name %in% c("North Carolina", "Virginia", "South Carolina")) %>%
+  st_transform(4326)
+
+#cropping coastline
+coast_crop <- st_crop(coast_ll, bb_expanded)
+
+#adding shack label 
+shackleford_lon <- -76.625
+shackleford_lat <- 34.67
+
+#mapping
+AoL_map_static <- ggplot() +
+
+  # Land polygons
+  geom_sf(
+    data = coast_crop,
+    fill = "white",
+    color = "grey40",
+    linewidth = 0.3
+  ) +
+
+  # Catch points
+  geom_sf(
+    data = popup_sf,
+    aes(size = n_catches),
+    shape = 21,
+    fill = "steelblue",
+    color = "black",
+    alpha = 0.75,
+    stroke = 0.4
+  ) +
+
+  scale_size_area(
+    breaks = c(1, 5, 10, 25),
+    name = "Number of catches"
+  ) +
+
+  coord_sf(
+    xlim = c(bb_expanded["xmin"], bb_expanded["xmax"]),
+    ylim = c(bb_expanded["ymin"], bb_expanded["ymax"]),
+    expand = FALSE
+  ) +
+
+  annotation_scale(location = "br") +
+  annotation_north_arrow(
+    location = "br",
+    pad_x = unit(0.8, "cm"),
+    pad_y = unit(1.6, "cm"),
+    style = north_arrow_fancy_orienteering
+  ) +
+annotate(
+    "text",
+    x = shackleford_lon,
+    y = shackleford_lat,
+    label = "Shackleford Banks",
+    size = 3,
+    fontface = "italic",
+    color = "black",
+    hjust = 0,
+    vjust = -0.5
+  )+
+  theme_minimal(base_size = 11) +
+
+  # 🔑 Water background MUST come AFTER theme_minimal()
+  theme(
+    panel.background = element_rect(fill = "#dbeaf2", color = NA),
+    panel.grid = element_blank(),
+    axis.title = element_blank(),
+    axis.text = element_text(size = 9),
+    legend.position = c(0.15, 0.20),
+    legend.background = element_rect(
+      fill = alpha("white", 0.85),
+      color = NA
+    )
+  )
+AoL_map_static
+
+```
+
+#static satellite map
+```{r}
+#convert popup_map_data to sf
+popup_sf <- st_as_sf(
+  popup_map_data,
+  coords = c("lon_dd", "lat_dd"),  # your longitude/latitude columns
+  crs = 4326
+)
+
+#bb box from points
+bb <- st_bbox(popup_sf)
+
+bb_expanded <- bb
+bb_expanded[c("xmin", "ymin")] <- bb[c("xmin", "ymin")] - 0.05
+bb_expanded[c("xmax", "ymax")] <- bb[c("xmax", "ymax")] + 0.05
+
+#setting zoom
+sat <- get_tiles(
+  x = bb_expanded,
+  provider = "Esri.WorldImagery",
+  zoom = 14   # 🔑 this is the real fix
+)
+
+dim(sat)
+
+
+#plot
+AoL_map_static_sat <- ggplot() +
+
+  # 🛰️ Satellite basemap
+ layer_spatial(sat, interpolate = FALSE)+
+
+  # Catch points
+  geom_sf(
+    data = popup_sf,
+    aes(size = n_catches),
+    shape = 21,
+    fill = "darkorange",
+    color = "black",
+    alpha = 0.75,
+    stroke = 0.4
+  ) +
+
+  scale_size_area(
+    breaks = c(1, 5, 10, 25),
+    name = "Number of catches"
+  ) +
+
+  coord_sf(
+    xlim = c(bb_expanded["xmin"], bb_expanded["xmax"]),
+    ylim = c(bb_expanded["ymin"], bb_expanded["ymax"]),
+    expand = FALSE
+  ) +
+
+  annotation_scale(
+  location = "br",
+  text_col = "white",
+  line_col = "white",
+  fill = c("white", "white"),
+  height = unit(0.25, "cm")
+)+
+  annotation_north_arrow(
+  location = "tr",
+  pad_x = unit(0.6, "cm"),
+  pad_y = unit(0.6, "cm"),
+  style = north_arrow_fancy_orienteering(
+    text_col = "white",
+    line_col = "white",
+    fill = c("white", "white")
+  )
+) +
+
+  theme_minimal(base_size = 11) +
+
+  theme(
+    panel.background = element_rect(fill = NA, color = NA),
+    panel.grid = element_blank(),
+    axis.title = element_blank(),
+    axis.text = element_text(size = 9),
+    legend.position = c(0.15, 0.20),
+    legend.background = element_rect(
+      fill = alpha("white", 0.85),
+      color = NA
+    )
+  )
+
+AoL_map_static_sat
+```
+
+#locator map
+```{r}
+#getting NC map
+library(tigris)
+library(sf)
+library(ggplot2)
+
+states <- states(cb = TRUE, year = 2022)
+
+nc <- states |>
+  dplyr::filter(STUSPS == "NC") |>
+  st_transform(4326)
+
+#convert study area into polygon
+study_area <- st_as_sfc(bb_expanded) |> st_set_crs(4326)
+
+#plot map
+NC_context_map_bw <- ggplot() +
+
+  # NC fill
+  geom_sf(
+    data = nc,
+    fill = "grey95",
+    color = "black",
+    linewidth = 0.6
+  ) +
+
+  # Study area polygon
+  geom_sf(
+    data = study_area,
+    fill = "skyblue",
+    color = "orange",
+    linewidth = 1.5
+  ) +
+
+  coord_sf(expand = FALSE) +
+  theme_void()
+
+
+NC_context_map_bw
+```
